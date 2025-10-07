@@ -147,6 +147,7 @@
     <Project Path="src/VectorData/CosmosMongoDB/CosmosMongoDB.csproj" />
     <Project Path="src/VectorData/CosmosNoSql/CosmosNoSql.csproj" />
     <Project Path="src/VectorData/InMemory/InMemory.csproj" />
+    <Project Path="src/VectorData/LiteDb/LiteDb.csproj" />
     <Project Path="src/VectorData/Milvus/Milvus.csproj" />
     <Project Path="src/VectorData/MongoDB/MongoDB.csproj" />
     <Project Path="src/VectorData/PgVector/PgVector.csproj" />
@@ -322,6 +323,7 @@
     <Project Path="test/VectorData/CosmosNoSql.UnitTests/CosmosNoSql.UnitTests.csproj" />
     <Project Path="test/VectorData/InMemory.ConformanceTests/InMemory.ConformanceTests.csproj" />
     <Project Path="test/VectorData/InMemory.UnitTests/InMemory.UnitTests.csproj" />
+    <Project Path="test/VectorData/LiteDb.UnitTests/LiteDb.UnitTests.csproj" />
     <Project Path="test/VectorData/MongoDB.ConformanceTests/MongoDB.ConformanceTests.csproj" />
     <Project Path="test/VectorData/MongoDB.UnitTests/MongoDB.UnitTests.csproj" />
     <Project Path="test/VectorData/PgVector.ConformanceTests/PgVector.ConformanceTests.csproj" />

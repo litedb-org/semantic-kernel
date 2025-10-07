@@ -217,6 +217,7 @@
       <PrivateAssets>all</PrivateAssets>
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageVersion Include="LiteDB" Version="6.0.0-prerelease.63" />
     <!-- OnnxRuntimeGenAI -->
     <PackageVersion Include="Microsoft.ML.OnnxRuntimeGenAI" Version="0.8.3" />
     <PackageVersion Include="Microsoft.ML.OnnxRuntimeGenAI.Cuda" Version="0.8.1" />
