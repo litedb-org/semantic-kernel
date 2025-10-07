@@ -115,5 +115,5 @@ var dynamicCollection = store.GetDynamicCollection("snippets", definition);
 ## Limitations
 
 - LiteDB's vector APIs are synchronous; high-throughput scenarios should run on background threads or batch operations.
-- LiteDB databases are single-process; avoid opening the same file from multiple processes simultaneously.
+- LiteDB databases are single-process; avoid opening the same file from multiple processes simultaneously. (although supported)
 - `IncludeVectors` cannot be enabled on retrieval operations when embedding generation is configured, matching the behavior of other Semantic Kernel connectors.
