@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.VectorData.ProviderServices;
@@ -29,6 +30,18 @@ internal sealed class LiteDbMapper<TRecord>(CollectionModel model)
             var value = property.GetValueAsObject(record);
             if (value is null)
             {
+                continue;
+            }
+
+            if (value is IEnumerable enumerable && value is not string)
+            {
+                var array = new BsonArray();
+                foreach (var element in enumerable)
+                {
+                    array.Add(element is null ? BsonValue.Null : new BsonValue(element));
+                }
+
+                document[property.StorageName] = array;
                 continue;
             }
 
@@ -135,6 +148,36 @@ internal sealed class LiteDbMapper<TRecord>(CollectionModel model)
         if (underlyingType == typeof(string))
         {
             return value.AsString;
+        }
+
+        if (value.IsArray)
+        {
+            var array = value.AsArray;
+
+            if (underlyingType.IsArray)
+            {
+                var elementType = underlyingType.GetElementType() ?? typeof(object);
+                var result = Array.CreateInstance(elementType, array.Count);
+                for (var i = 0; i < array.Count; i++)
+                {
+                    result.SetValue(ConvertValue(array[i], elementType), i);
+                }
+
+                return result;
+            }
+
+            if (typeof(IList).IsAssignableFrom(underlyingType) && underlyingType.IsGenericType)
+            {
+                var elementType = underlyingType.GetGenericArguments()[0];
+                var listType = typeof(List<>).MakeGenericType(elementType);
+                var list = (IList)Activator.CreateInstance(listType)!;
+                foreach (var item in array)
+                {
+                    list.Add(ConvertValue(item, elementType));
+                }
+
+                return list;
+            }
         }
 
         if (underlyingType == typeof(int))

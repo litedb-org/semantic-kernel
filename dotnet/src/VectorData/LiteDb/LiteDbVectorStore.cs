@@ -185,27 +185,14 @@ public sealed class LiteDbVectorStore : VectorStore
             throw new ArgumentException("Connection string cannot be null or whitespace.", nameof(connectionString));
         }
 
-        if (options is not null && (options.Database is not null || options.DatabaseFactory is not null))
-        {
-            throw new ArgumentException("When providing a connection string do not supply an existing LiteDatabase or database factory via options.", nameof(options));
-        }
-
-        var normalized = new LiteDbVectorStoreOptions(options)
-        {
-            ConnectionString = connectionString
-        };
-
+        var normalized = new LiteDbVectorStoreOptions(options);
+        normalized.ConnectionString = connectionString;
         return normalized;
     }
 
     private static LiteDbVectorStoreOptions NormalizeDatabaseOptions(LiteDatabase database, LiteDbVectorStoreOptions? options)
     {
         ArgumentNullException.ThrowIfNull(database);
-
-        if (options is not null && options.DatabaseFactory is not null)
-        {
-            throw new ArgumentException("When providing a LiteDatabase instance do not supply a database factory via options.", nameof(options));
-        }
 
         var normalized = new LiteDbVectorStoreOptions(options)
         {
@@ -217,16 +204,6 @@ public sealed class LiteDbVectorStore : VectorStore
 
     private static (LiteDatabase Database, bool OwnsDatabase, string ConnectionIdentifier) ResolveDatabase(LiteDbVectorStoreOptions options)
     {
-        if (options.Database is not null && options.DatabaseFactory is not null)
-        {
-            throw new ArgumentException("Specify either Database or DatabaseFactory but not both.", nameof(options));
-        }
-
-        if (options.Database is not null)
-        {
-            return (options.Database, options.DisposeDatabase, LiteDbConstants.VectorStoreSystemName);
-        }
-
         if (options.DatabaseFactory is not null)
         {
             var database = options.DatabaseFactory();
@@ -236,6 +213,11 @@ public sealed class LiteDbVectorStore : VectorStore
             }
 
             return (database, options.DisposeDatabase, LiteDbConstants.VectorStoreSystemName);
+        }
+
+        if (options.Database is not null)
+        {
+            return (options.Database, options.DisposeDatabase, LiteDbConstants.VectorStoreSystemName);
         }
 
         var connectionString = string.IsNullOrWhiteSpace(options.ConnectionString)

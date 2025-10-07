@@ -22,6 +22,8 @@ The store can also open a LiteDB database using a connection string. When you pa
 
 When you need the connector to manage the database lifecycle, create the store with `LiteDbVectorStoreOptions`. The options surface supports supplying a database factory and a collection name prefix.
 
+Connection sources are considered in the following order: a configured `DatabaseFactory` is used first, then an existing `LiteDatabase` instance via `Database`, and finally the `ConnectionString` (or the embedded default when none is supplied). The `AutoCreateVectorIndexes` property is an alias for `AutoEnsureVectorIndex` so that existing configuration snippets continue to work unchanged.
+
 ```csharp
 var options = new LiteDbVectorStoreOptions
 {
@@ -57,6 +59,20 @@ await collection.EnsureCollectionExistsAsync();
 
 The connector automatically provisions HNSW vector indexes when `EnsureCollectionExistsAsync` is called and a vector property is present. Distance metrics default to cosine similarity but can be overridden through attributes or `LiteDbCollectionOptions`.
 
+## Filtering
+
+LiteDB filter translation covers the standard comparison operators along with string and set membership helpers. The following table shows a subset of the mappings:
+
+| Semantic Kernel filter | LiteDB predicate |
+| --- | --- |
+| `r => r.Rating >= 4` | `($.Rating >= @0)` |
+| `r => r.City.StartsWith("Sea")` | `($.City LIKE @0)` |
+| `r => r.Description.EndsWith("Inn")` | `($.Description LIKE @0)` |
+| `r => r.Tags.Contains("spa")` | `($.Tags ANY = @0)` |
+| `r => new[] { "Seattle", "Portland" }.Contains(r.City)` | `($.City IN @0)` |
+
+Captured variables are parameterized, and unsupported constructs (such as the `StringComparison` overloads) throw `NotSupportedException` so that filters never silently fall back to client-side evaluation.
+
 ## Generating embeddings on the fly
 
 When a record's vector property is a non-vector type (for example `string` or `DataContent`), configure an `IEmbeddingGenerator` so that LiteDB receives vectors during `UpsertAsync` and vector search:
@@ -72,6 +88,10 @@ var collection = store.GetCollection<string, Article>("articles");
 ```
 
 The store-level generator is inherited by collections, but you can override it per collection via `LiteDbCollectionOptions` or per property through a `VectorStoreCollectionDefinition`.
+
+## Batch upserts and transactions
+
+`UpsertAsync(IEnumerable<TRecord>)` executes inside a LiteDB transaction. Either all documents in the batch are written or an exception is thrown and the collection is left unchanged. Single-record upserts skip the transaction for better throughput.
 
 ## Dependency injection
 
@@ -93,6 +113,12 @@ services.AddLiteDbDynamicCollection("snippets", _ => definition);
 ```
 
 Registered collections automatically resolve a `VectorStoreCollection<TKey, TRecord>` and `IVectorSearchable<TRecord>` backed by the keyed store, and they inherit the embedding generator registered in the DI container when one is not provided in the options.
+
+## Performance considerations
+
+- Index creation happens when `EnsureCollectionExistsAsync` runs. For large collections, schedule this ahead of ingesting data or during maintenance windows.
+- Filters that leverage string operators and `IN` clauses are translated to server-side predicates; prefer them over manual in-memory filtering for better selectivity.
+- Vectors are validated at write time so that accidental dimension mismatches are caught before they reach storage.
 
 ## Dynamic collections
 

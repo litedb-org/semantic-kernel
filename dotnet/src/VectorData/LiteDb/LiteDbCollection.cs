@@ -171,10 +171,35 @@ public class LiteDbCollection<TKey, TRecord> : VectorStoreCollection<TKey, TReco
         for (var i = 0; i < materialized.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            documents.Add(this._mapper.MapToDocument(materialized[i], generatedVectors, i));
+            var document = this._mapper.MapToDocument(materialized[i], generatedVectors, i);
+            this.ValidateVectorDimensions(document);
+            documents.Add(document);
         }
 
-        this._collection.Upsert(documents);
+        if (documents.Count == 1)
+        {
+            this._collection.Upsert(documents[0]);
+            return;
+        }
+
+        var startedTransaction = this._database.BeginTrans();
+        try
+        {
+            this._collection.Upsert(documents);
+            if (startedTransaction)
+            {
+                this._database.Commit();
+            }
+        }
+        catch
+        {
+            if (startedTransaction)
+            {
+                this._database.Rollback();
+            }
+
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -354,4 +379,26 @@ public class LiteDbCollection<TKey, TRecord> : VectorStoreCollection<TKey, TReco
             LiteDbDistanceMetric.Euclidean => VectorDistanceMetric.Euclidean,
             _ => throw new NotSupportedException($"Unsupported distance metric '{metric}'.")
         };
+
+    private void ValidateVectorDimensions(BsonDocument document)
+    {
+        foreach (var property in this._vectorProperties)
+        {
+            if (!document.TryGetValue(property.StorageName, out var value) || value is not BsonVector vector)
+            {
+                continue;
+            }
+
+            var expectedDimensions = this._options.VectorDimensions ?? property.Dimensions;
+            if (expectedDimensions <= 0)
+            {
+                continue;
+            }
+
+            if (vector.Values.Length != expectedDimensions)
+            {
+                throw new InvalidOperationException($"Vector property '{property.ModelName}' expects {expectedDimensions} dimensions but received {vector.Values.Length}.");
+            }
+        }
+    }
 }
