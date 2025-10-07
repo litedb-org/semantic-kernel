@@ -14,6 +14,28 @@ public sealed class LiteDbCollectionOptions
     internal static readonly LiteDbCollectionOptions Default = new();
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="LiteDbCollectionOptions"/> class.
+    /// </summary>
+    public LiteDbCollectionOptions()
+    {
+    }
+
+    internal LiteDbCollectionOptions(LiteDbCollectionOptions? source)
+    {
+        if (source is null)
+        {
+            return;
+        }
+
+        this.Definition = source.Definition;
+        this.EmbeddingGenerator = source.EmbeddingGenerator;
+        this.VectorDimensions = source.VectorDimensions;
+        this.DistanceMetric = source.DistanceMetric;
+        this.ConnectionString = source.ConnectionString;
+        this.CollectionNamePrefix = source.CollectionNamePrefix;
+    }
+
+    /// <summary>
     /// Gets or sets the schema definition for dynamic collections.
     /// </summary>
     public VectorStoreCollectionDefinition? Definition { get; set; }

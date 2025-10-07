@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using LiteDB;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.VectorData;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.SemanticKernel.Connectors.LiteDb;
 using Xunit;
 
@@ -245,6 +246,137 @@ public sealed class LiteDbVectorStoreTests
         Assert.Equal("city", fetched!["Category"]);
         var embedding = (ReadOnlyMemory<float>)fetched["Embedding"]!;
         Assert.Equal(new[] { 1f, 0f, 0f }, embedding.ToArray());
+    }
+
+    [Fact]
+    public async Task CollectionPrefixIsAppliedToStorageNameAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+        database.GetCollection<BsonDocument>("legacy").Insert(new BsonDocument { ["_id"] = "legacy" });
+
+        var options = new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            CollectionNamePrefix = "sk_"
+        };
+
+        using var store = new LiteDbVectorStore(database, options);
+
+        var collection = store.GetCollection<string, TestHotel>("hotels");
+        await collection.EnsureCollectionExistsAsync();
+
+        var names = database.GetCollectionNames().ToArray();
+        Assert.Contains("sk_hotels", names);
+        Assert.Equal("sk_hotels", collection.Name);
+
+        var logicalNames = new List<string>();
+        await foreach (var name in store.ListCollectionNamesAsync())
+        {
+            logicalNames.Add(name);
+        }
+
+        Assert.Contains("hotels", logicalNames);
+        Assert.DoesNotContain("sk_hotels", logicalNames);
+        Assert.DoesNotContain("legacy", logicalNames);
+        Assert.True(await store.CollectionExistsAsync("hotels"));
+
+        await store.EnsureCollectionDeletedAsync("hotels");
+        names = database.GetCollectionNames().ToArray();
+        Assert.DoesNotContain("sk_hotels", names);
+    }
+
+    [Fact]
+    public async Task DatabaseFactoryRespectsDisposeFlagAsync()
+    {
+        var stream = new MemoryStream();
+        var callCount = 0;
+
+        var options = new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            DatabaseFactory = () =>
+            {
+                callCount++;
+                return new LiteDatabase(stream);
+            }
+        };
+
+        using (var store = new LiteDbVectorStore(options))
+        {
+            var collection = store.GetCollection<string, TestHotel>("hotels");
+            await collection.EnsureCollectionExistsAsync();
+
+            await collection.UpsertAsync(new TestHotel
+            {
+                HotelId = "alpha",
+                HotelName = "Alpha",
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f, 0f })
+            });
+
+            var fetched = await collection.GetAsync("alpha");
+            Assert.NotNull(fetched);
+        }
+
+        Assert.Equal(1, callCount);
+        Assert.True(stream.CanRead);
+    }
+
+    [Fact]
+    public async Task ServiceCollectionRegistersLiteDbStoreAndCollectionsAsync()
+    {
+        var services = new ServiceCollection();
+        services.AddSingleton<IEmbeddingGenerator, StringEmbeddingGenerator>();
+        services.AddLiteDbVectorStore(sp => new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            DatabaseFactory = () => new LiteDatabase(new MemoryStream())
+        });
+        services.AddLiteDbCollection<string, TestHotel>("hotels");
+        services.AddLiteDbCollection<string, GeneratedHotel>("generated_hotels");
+
+        using var provider = services.BuildServiceProvider();
+
+        var store = provider.GetRequiredService<VectorStore>();
+        var liteStore = Assert.IsType<LiteDbVectorStore>(store);
+
+        var hotelCollection = provider.GetRequiredService<VectorStoreCollection<string, TestHotel>>();
+        await hotelCollection.EnsureCollectionExistsAsync();
+
+        await hotelCollection.UpsertAsync(new TestHotel
+        {
+            HotelId = "alpha",
+            HotelName = "Alpha",
+            DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f, 0f })
+        });
+
+        Assert.NotNull(await hotelCollection.GetAsync("alpha"));
+
+        var generatedCollection = provider.GetRequiredService<VectorStoreCollection<string, GeneratedHotel>>();
+        await generatedCollection.EnsureCollectionExistsAsync();
+
+        await generatedCollection.UpsertAsync(new GeneratedHotel
+        {
+            HotelId = "beta",
+            Description = "1,0,0"
+        });
+
+        var searchResults = new List<VectorSearchResult<GeneratedHotel>>();
+        await foreach (var result in generatedCollection.SearchAsync("1,0,0", top: 1))
+        {
+            searchResults.Add(result);
+        }
+
+        Assert.Single(searchResults);
+        Assert.Equal("beta", searchResults[0].Record.HotelId);
+
+        var collectionNames = new List<string>();
+        await foreach (var name in liteStore.ListCollectionNamesAsync())
+        {
+            collectionNames.Add(name);
+        }
+
+        Assert.Contains("hotels", collectionNames);
+        Assert.Contains("generated_hotels", collectionNames);
     }
 
     private sealed class TestHotel

@@ -28,45 +28,35 @@ public sealed class LiteDbVectorStore : VectorStore
     /// Initializes a new instance of the <see cref="LiteDbVectorStore"/> class using the provided connection string.
     /// </summary>
     public LiteDbVectorStore(string connectionString, LiteDbVectorStoreOptions? options = null)
+        : this(NormalizeConnectionOptions(connectionString, options))
     {
-        if (string.IsNullOrWhiteSpace(connectionString))
-        {
-            throw new ArgumentException("Connection string cannot be null or whitespace.", nameof(connectionString));
-        }
-
-        options ??= new LiteDbVectorStoreOptions();
-        if (options.Database is not null)
-        {
-            throw new ArgumentException("When providing a connection string do not supply an existing LiteDatabase instance via options.", nameof(options));
-        }
-
-        this._options = options;
-        this._database = new LiteDatabase(connectionString);
-        this._ownsDatabase = true;
-        this._connectionIdentifier = connectionString;
-        this._metadata = new VectorStoreMetadata
-        {
-            VectorStoreSystemName = LiteDbConstants.VectorStoreSystemName,
-            VectorStoreName = connectionString
-        };
     }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LiteDbVectorStore"/> class using an existing <see cref="LiteDatabase"/>.
     /// </summary>
     public LiteDbVectorStore(LiteDatabase database, LiteDbVectorStoreOptions? options = null)
+        : this(NormalizeDatabaseOptions(database, options))
     {
-        ArgumentNullException.ThrowIfNull(database);
-        options ??= new LiteDbVectorStoreOptions();
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="LiteDbVectorStore"/> class using the supplied options.
+    /// </summary>
+    public LiteDbVectorStore(LiteDbVectorStoreOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
 
         this._options = options;
+        var (database, ownsDatabase, connectionIdentifier) = ResolveDatabase(options);
+
         this._database = database;
-        this._ownsDatabase = options.DisposeDatabase;
-        this._connectionIdentifier = LiteDbConstants.VectorStoreSystemName;
+        this._ownsDatabase = ownsDatabase;
+        this._connectionIdentifier = connectionIdentifier;
         this._metadata = new VectorStoreMetadata
         {
             VectorStoreSystemName = LiteDbConstants.VectorStoreSystemName,
-            VectorStoreName = LiteDbConstants.VectorStoreSystemName
+            VectorStoreName = connectionIdentifier
         };
     }
 
@@ -86,12 +76,13 @@ public sealed class LiteDbVectorStore : VectorStore
         var collectionOptions = new LiteDbCollectionOptions
         {
             Definition = definition,
-            EmbeddingGenerator = this._options.EmbeddingGenerator
+            EmbeddingGenerator = this._options.EmbeddingGenerator,
+            CollectionNamePrefix = this._options.CollectionNamePrefix
         };
 
         return new LiteDbCollection<TKey, TRecord>(
             this._database,
-            name,
+            this.ResolveCollectionName(name, collectionOptions),
             this._options,
             collectionOptions,
             static opts => typeof(TRecord) == typeof(Dictionary<string, object?>)
@@ -117,19 +108,31 @@ public sealed class LiteDbVectorStore : VectorStore
         var collectionOptions = new LiteDbCollectionOptions
         {
             Definition = definition,
-            EmbeddingGenerator = this._options.EmbeddingGenerator
+            EmbeddingGenerator = this._options.EmbeddingGenerator,
+            CollectionNamePrefix = this._options.CollectionNamePrefix
         };
 
-        return new LiteDbDynamicCollection(this._database, name, this._options, collectionOptions, this._connectionIdentifier);
+        return new LiteDbDynamicCollection(
+            this._database,
+            this.ResolveCollectionName(name, collectionOptions),
+            this._options,
+            collectionOptions,
+            this._connectionIdentifier);
     }
 
     /// <inheritdoc />
     public override async IAsyncEnumerable<string> ListCollectionNamesAsync([EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        foreach (var name in this._database.GetCollectionNames())
+        foreach (var storageName in this._database.GetCollectionNames())
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return name;
+
+            if (!this.TryNormalizeCollectionName(storageName, out var logicalName))
+            {
+                continue;
+            }
+
+            yield return logicalName;
             await Task.Yield();
         }
     }
@@ -137,14 +140,16 @@ public sealed class LiteDbVectorStore : VectorStore
     /// <inheritdoc />
     public override Task<bool> CollectionExistsAsync(string name, CancellationToken cancellationToken = default)
     {
-        var exists = this._database.GetCollectionNames().Contains(name, StringComparer.OrdinalIgnoreCase);
+        var storageName = this.ResolveCollectionName(name);
+        var exists = this._database.GetCollectionNames().Contains(storageName, StringComparer.OrdinalIgnoreCase);
         return Task.FromResult(exists);
     }
 
     /// <inheritdoc />
     public override Task EnsureCollectionDeletedAsync(string name, CancellationToken cancellationToken = default)
     {
-        this._database.DropCollection(name);
+        var storageName = this.ResolveCollectionName(name);
+        this._database.DropCollection(storageName);
         return Task.CompletedTask;
     }
 
@@ -171,5 +176,98 @@ public sealed class LiteDbVectorStore : VectorStore
         }
 
         base.Dispose(disposing);
+    }
+
+    private static LiteDbVectorStoreOptions NormalizeConnectionOptions(string connectionString, LiteDbVectorStoreOptions? options)
+    {
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new ArgumentException("Connection string cannot be null or whitespace.", nameof(connectionString));
+        }
+
+        if (options is not null && (options.Database is not null || options.DatabaseFactory is not null))
+        {
+            throw new ArgumentException("When providing a connection string do not supply an existing LiteDatabase or database factory via options.", nameof(options));
+        }
+
+        var normalized = new LiteDbVectorStoreOptions(options)
+        {
+            ConnectionString = connectionString
+        };
+
+        return normalized;
+    }
+
+    private static LiteDbVectorStoreOptions NormalizeDatabaseOptions(LiteDatabase database, LiteDbVectorStoreOptions? options)
+    {
+        ArgumentNullException.ThrowIfNull(database);
+
+        if (options is not null && options.DatabaseFactory is not null)
+        {
+            throw new ArgumentException("When providing a LiteDatabase instance do not supply a database factory via options.", nameof(options));
+        }
+
+        var normalized = new LiteDbVectorStoreOptions(options)
+        {
+            Database = database
+        };
+
+        return normalized;
+    }
+
+    private static (LiteDatabase Database, bool OwnsDatabase, string ConnectionIdentifier) ResolveDatabase(LiteDbVectorStoreOptions options)
+    {
+        if (options.Database is not null && options.DatabaseFactory is not null)
+        {
+            throw new ArgumentException("Specify either Database or DatabaseFactory but not both.", nameof(options));
+        }
+
+        if (options.Database is not null)
+        {
+            return (options.Database, options.DisposeDatabase, LiteDbConstants.VectorStoreSystemName);
+        }
+
+        if (options.DatabaseFactory is not null)
+        {
+            var database = options.DatabaseFactory();
+            if (database is null)
+            {
+                throw new InvalidOperationException("The LiteDbVectorStoreOptions.DatabaseFactory returned null.");
+            }
+
+            return (database, options.DisposeDatabase, LiteDbConstants.VectorStoreSystemName);
+        }
+
+        var connectionString = string.IsNullOrWhiteSpace(options.ConnectionString)
+            ? LiteDbConstants.DefaultConnectionString
+            : options.ConnectionString;
+
+        var databaseInstance = new LiteDatabase(connectionString);
+        return (databaseInstance, options.DisposeDatabase, connectionString);
+    }
+
+    private string ResolveCollectionName(string name, LiteDbCollectionOptions? collectionOptions = null)
+    {
+        var prefix = collectionOptions?.CollectionNamePrefix ?? this._options.CollectionNamePrefix;
+        return string.IsNullOrEmpty(prefix) ? name : string.Concat(prefix, name);
+    }
+
+    private bool TryNormalizeCollectionName(string storageName, out string logicalName)
+    {
+        var prefix = this._options.CollectionNamePrefix;
+        if (string.IsNullOrEmpty(prefix))
+        {
+            logicalName = storageName;
+            return true;
+        }
+
+        if (!storageName.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            logicalName = string.Empty;
+            return false;
+        }
+
+        logicalName = storageName[prefix.Length..];
+        return true;
     }
 }

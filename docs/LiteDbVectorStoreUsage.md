@@ -20,6 +20,20 @@ var store = new LiteDbVectorStore(database);
 
 The store can also open a LiteDB database using a connection string. When you pass an existing `LiteDatabase` instance you control its lifecycle via `LiteDbVectorStoreOptions.DisposeDatabase`.
 
+When you need the connector to manage the database lifecycle, create the store with `LiteDbVectorStoreOptions`. The options surface supports supplying a database factory and a collection name prefix.
+
+```csharp
+var options = new LiteDbVectorStoreOptions
+{
+    DatabaseFactory = () => new LiteDatabase("Filename=sk.db;Connection=shared"),
+    CollectionNamePrefix = "sk_"
+};
+
+using var store = new LiteDbVectorStore(options);
+```
+
+Collections created through this store are materialized as `sk_*` tables, while APIs such as `CollectionExistsAsync` and `ListCollectionNamesAsync` use the logical names you pass to `GetCollection`.
+
 ## Defining a collection
 
 Collections map strongly-typed record models to LiteDB BSON documents. Use the Semantic Kernel attributes to annotate key, data, and vector fields:
@@ -58,6 +72,27 @@ var collection = store.GetCollection<string, Article>("articles");
 ```
 
 The store-level generator is inherited by collections, but you can override it per collection via `LiteDbCollectionOptions` or per property through a `VectorStoreCollectionDefinition`.
+
+## Dependency injection
+
+`Microsoft.Extensions.DependencyInjection` helpers are available so that the LiteDB connector participates in common hosting patterns:
+
+```csharp
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.SemanticKernel.Connectors.LiteDb;
+
+var services = new ServiceCollection();
+
+services.AddLiteDbVectorStore(sp => new LiteDbVectorStoreOptions
+{
+    DatabaseFactory = () => new LiteDatabase("Filename=sk.db;Connection=shared")
+});
+
+services.AddLiteDbCollection<string, Hotel>("hotels");
+services.AddLiteDbDynamicCollection("snippets", _ => definition);
+```
+
+Registered collections automatically resolve a `VectorStoreCollection<TKey, TRecord>` and `IVectorSearchable<TRecord>` backed by the keyed store, and they inherit the embedding generator registered in the DI container when one is not provided in the options.
 
 ## Dynamic collections
 
