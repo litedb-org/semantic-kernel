@@ -149,6 +149,7 @@
     <Project Path="src/VectorData/InMemory/InMemory.csproj" />
     <Project Path="src/VectorData/Milvus/Milvus.csproj" />
     <Project Path="src/VectorData/MongoDB/MongoDB.csproj" />
+    <Project Path="src/VectorData/LiteDb/LiteDb.csproj" />
     <Project Path="src/VectorData/PgVector/PgVector.csproj" />
     <Project Path="src/VectorData/Pinecone/Pinecone.csproj" />
     <Project Path="src/VectorData/Qdrant/Qdrant.csproj" />
@@ -324,6 +325,7 @@
     <Project Path="test/VectorData/InMemory.UnitTests/InMemory.UnitTests.csproj" />
     <Project Path="test/VectorData/MongoDB.ConformanceTests/MongoDB.ConformanceTests.csproj" />
     <Project Path="test/VectorData/MongoDB.UnitTests/MongoDB.UnitTests.csproj" />
+    <Project Path="test/VectorData/LiteDb.UnitTests/LiteDb.UnitTests.csproj" />
     <Project Path="test/VectorData/PgVector.ConformanceTests/PgVector.ConformanceTests.csproj" />
     <Project Path="test/VectorData/PgVector.UnitTests/PgVector.UnitTests.csproj" />
     <Project Path="test/VectorData/Pinecone.ConformanceTests/Pinecone.ConformanceTests.csproj" />
