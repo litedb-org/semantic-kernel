@@ -1,7 +1,9 @@
 // Copyright (c) Microsoft. All rights reserved.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.VectorData.ProviderServices;
 using LiteDB;
@@ -32,7 +34,7 @@ internal sealed class LiteDbMapper<TRecord>(CollectionModel model)
                 continue;
             }
 
-            document[property.StorageName] = new BsonValue(value);
+            document[property.StorageName] = CreateBsonValue(value);
         }
 
         foreach (var property in this._model.VectorProperties)
@@ -50,6 +52,11 @@ internal sealed class LiteDbMapper<TRecord>(CollectionModel model)
 
             if (vector is not null)
             {
+                if (property.Dimensions > 0 && vector.Length != property.Dimensions)
+                {
+                    throw new InvalidOperationException($"Vector property '{property.ModelName}' expects {property.Dimensions} dimensions but received {vector.Length}.");
+                }
+
                 document[property.StorageName] = new BsonVector(vector);
             }
         }
@@ -124,6 +131,44 @@ internal sealed class LiteDbMapper<TRecord>(CollectionModel model)
         }
     }
 
+    private static BsonValue CreateBsonValue(object value)
+    {
+        switch (value)
+        {
+            case BsonValue bson:
+                return bson;
+            case byte[] bytes:
+                return new BsonValue(bytes);
+        }
+
+        if (value is IDictionary dictionary)
+        {
+            var document = new BsonDocument();
+            foreach (DictionaryEntry entry in dictionary)
+            {
+                if (entry.Key is string key)
+                {
+                    document[key] = entry.Value is null ? BsonValue.Null : CreateBsonValue(entry.Value);
+                }
+            }
+
+            return document;
+        }
+
+        if (value is IEnumerable enumerable && value is not string)
+        {
+            var array = new BsonArray();
+            foreach (var item in enumerable)
+            {
+                array.Add(item is null ? BsonValue.Null : CreateBsonValue(item));
+            }
+
+            return array;
+        }
+
+        return new BsonValue(value);
+    }
+
     private static object? ConvertValue(BsonValue value, Type targetType)
     {
         var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;
@@ -181,6 +226,16 @@ internal sealed class LiteDbMapper<TRecord>(CollectionModel model)
             }
 
             return dictionary;
+        }
+
+        if (underlyingType.IsArray && underlyingType.GetElementType() == typeof(string) && value.RawValue is IEnumerable<BsonValue> bsonArray)
+        {
+            return bsonArray.Select(v => v.AsString).ToArray();
+        }
+
+        if (underlyingType == typeof(List<string>) && value.RawValue is IEnumerable<BsonValue> bsonList)
+        {
+            return bsonList.Select(v => v.AsString).ToList();
         }
 
         return value.RawValue;

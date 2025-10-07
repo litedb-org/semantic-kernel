@@ -89,7 +89,8 @@ public class LiteDbCollection<TKey, TRecord> : VectorStoreCollection<TKey, TReco
     /// <inheritdoc />
     public override Task EnsureCollectionExistsAsync(CancellationToken cancellationToken = default)
     {
-        if (this._storeOptions.AutoEnsureVectorIndex && this._vectorProperties.Count > 0)
+        var autoEnsure = this._storeOptions.AutoCreateVectorIndexes ?? this._storeOptions.AutoEnsureVectorIndex;
+        if (autoEnsure && this._vectorProperties.Count > 0)
         {
             foreach (var vectorProperty in this._vectorProperties)
             {
@@ -174,7 +175,32 @@ public class LiteDbCollection<TKey, TRecord> : VectorStoreCollection<TKey, TReco
             documents.Add(this._mapper.MapToDocument(materialized[i], generatedVectors, i));
         }
 
-        this._collection.Upsert(documents);
+        var useTransaction = materialized.Count > 1;
+        var transactionStarted = false;
+
+        try
+        {
+            if (useTransaction)
+            {
+                transactionStarted = this._database.BeginTrans();
+            }
+
+            this._collection.Upsert(documents);
+
+            if (transactionStarted)
+            {
+                this._database.Commit();
+            }
+        }
+        catch
+        {
+            if (transactionStarted)
+            {
+                this._database.Rollback();
+            }
+
+            throw;
+        }
     }
 
     /// <inheritdoc />
@@ -249,24 +275,42 @@ public class LiteDbCollection<TKey, TRecord> : VectorStoreCollection<TKey, TReco
         var take = top + options.Skip;
         var results = query.TopKNear($"$.{vectorProperty.StorageName}", vectorArray, take).ToEnumerable();
 
-        var index = 0;
+        var buffer = new List<VectorSearchResult<TRecord>>();
 
         foreach (var document in results)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (index++ < options.Skip)
-            {
-                continue;
-            }
-            var record = this._mapper.MapToRecord(document, options.IncludeVectors);
 
             if (!document.TryGetValue(vectorProperty.StorageName, out var value) || value is not BsonVector candidate)
             {
                 continue;
             }
 
+            var record = this._mapper.MapToRecord(document, options.IncludeVectors);
             var score = LiteDbVectorMath.Compare(vectorArray, candidate.Values, metric);
-            yield return new VectorSearchResult<TRecord>(record, score);
+            buffer.Add(new VectorSearchResult<TRecord>(record, score));
+        }
+
+        var ordered = LiteDbVectorMath.ShouldSortDescending(metric)
+            ? buffer.OrderByDescending(result => result.Score)
+            : buffer.OrderBy(result => result.Score);
+
+        var skipped = 0;
+        var yielded = 0;
+
+        foreach (var result in ordered)
+        {
+            if (skipped < options.Skip)
+            {
+                skipped++;
+                continue;
+            }
+
+            yield return result;
+            if (++yielded >= top)
+            {
+                yield break;
+            }
         }
     }
 

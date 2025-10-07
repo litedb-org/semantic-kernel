@@ -34,6 +34,8 @@ using var store = new LiteDbVectorStore(options);
 
 Collections created through this store are materialized as `sk_*` tables, while APIs such as `CollectionExistsAsync` and `ListCollectionNamesAsync` use the logical names you pass to `GetCollection`.
 
+`LiteDbVectorStoreOptions` honor the precedence `DatabaseFactory` → `Database` → `ConnectionString`. When `AutoCreateVectorIndexes` (or the legacy `AutoEnsureVectorIndex`) is set to `false`, collections skip index provisioning and you can manage indexes manually.
+
 ## Defining a collection
 
 Collections map strongly-typed record models to LiteDB BSON documents. Use the Semantic Kernel attributes to annotate key, data, and vector fields:
@@ -57,6 +59,23 @@ await collection.EnsureCollectionExistsAsync();
 
 The connector automatically provisions HNSW vector indexes when `EnsureCollectionExistsAsync` is called and a vector property is present. Distance metrics default to cosine similarity but can be overridden through attributes or `LiteDbCollectionOptions`.
 
+### Filter translation
+
+LiteDB evaluates filters server-side. The table below shows how common Semantic Kernel expressions translate into LiteDB predicates:
+
+| Semantic Kernel expression | LiteDB predicate |
+| --------------------------- | ---------------- |
+| `hotel => hotel.Rating >= 4` | `($.Rating >= @0)` |
+| `hotel => hotel.City.StartsWith("Sea")` | `($.City LIKE @0)` with `@0 = "Sea%"` |
+| `hotel => hotel.City.EndsWith("town")` | `($.City LIKE @0)` with `@0 = "%town"` |
+| `hotel => hotel.City.Contains("port")` | `($.City LIKE @0)` with `@0 = "%port%"` |
+| `hotel => hotel.Tags.Contains("spa")` | `(@0 IN $.Tags)` |
+| `allowedCities.Contains(hotel.City!)` | `($.City IN @0)` |
+| `hotel => hotel.City == null` | `($.City = null)` |
+| `hotel => hotel.City != null` | `($.City != null)` |
+
+Captured variables are parameterized (`@0`, `@1`, …) so repeated values are not interpolated into the query text.
+
 ## Generating embeddings on the fly
 
 When a record's vector property is a non-vector type (for example `string` or `DataContent`), configure an `IEmbeddingGenerator` so that LiteDB receives vectors during `UpsertAsync` and vector search:
@@ -71,7 +90,11 @@ var store = new LiteDbVectorStore("Filename=sk.db", options);
 var collection = store.GetCollection<string, Article>("articles");
 ```
 
-The store-level generator is inherited by collections, but you can override it per collection via `LiteDbCollectionOptions` or per property through a `VectorStoreCollectionDefinition`.
+The store-level generator is inherited by collections, and you can override it per property through a `VectorStoreCollectionDefinition`. This allows different embedding generators to service different vector fields within the same record.
+
+## Transactions and batch ingestion
+
+`UpsertAsync(IEnumerable<TRecord>)` wraps batched writes in a LiteDB transaction. Either every document is inserted or updated, or none of them are. Single-record upserts remain non-transactional for minimum overhead.
 
 ## Dependency injection
 
@@ -112,8 +135,13 @@ var definition = new VectorStoreCollectionDefinition
 var dynamicCollection = store.GetDynamicCollection("snippets", definition);
 ```
 
+## Performance notes
+
+- Vector index creation happens on demand during `EnsureCollectionExistsAsync`. For large collections it is faster to ingest in batches and call `EnsureCollectionExistsAsync` once.
+- Server-side filters are most effective when the predicate is selective (for example, indexed equality or range comparisons) before vector search runs.
+- LiteDB's vector APIs are synchronous; high-throughput scenarios should run on background threads or batch operations.
+
 ## Limitations
 
-- LiteDB's vector APIs are synchronous; high-throughput scenarios should run on background threads or batch operations.
 - LiteDB databases are single-process; avoid opening the same file from multiple processes simultaneously. (although supported)
 - `IncludeVectors` cannot be enabled on retrieval operations when embedding generation is configured, matching the behavior of other Semantic Kernel connectors.
