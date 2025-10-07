@@ -4,6 +4,10 @@ This project contains a step by step guide to get started using Vector Stores wi
 
 The examples can be run as integration tests but their code can also be copied to stand-alone programs.
 
+## Step 5 — LiteDB advanced scenario
+
+`Step5_LiteDb_AdvancedScenario` shows how to combine transactional batch upserts, per-property embedding generators and metrics, and the extended filter surface (`Contains`, `StartsWith`, `EndsWith`, `IN`) when working with the LiteDB connector.
+
 ## Configuring Secrets
 
 Most of the examples will require secrets and credentials, to access OpenAI, Azure OpenAI,
