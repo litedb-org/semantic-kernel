@@ -65,8 +65,14 @@ public sealed class LiteDbVectorStoreTests
         }
 
         Assert.Equal(2, results.Count);
-        Assert.Equal("beta", results[0].Record.HotelId);
-        Assert.True(results[0].Score >= results[1].Score);
+        var first = results[0];
+        var second = results[1];
+        Assert.NotNull(first.Record);
+        var firstRecord = first.Record!;
+        Assert.NotNull(firstRecord.HotelId);
+        var firstHotelId = firstRecord.HotelId!;
+        Assert.Equal("beta", firstHotelId);
+        Assert.True(first.Score >= second.Score);
     }
 
     [Fact]
@@ -377,6 +383,529 @@ public sealed class LiteDbVectorStoreTests
 
         Assert.Contains("hotels", collectionNames);
         Assert.Contains("generated_hotels", collectionNames);
+    }
+
+    [Fact]
+    public async Task FilterSupportsStringMembershipAndNestedGroupsAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+        using var store = new LiteDbVectorStore(database, new LiteDbVectorStoreOptions { DisposeDatabase = false });
+
+        var collection = store.GetCollection<string, TaggedHotel>("tagged_hotels");
+        await collection.EnsureCollectionExistsAsync();
+
+        await collection.UpsertAsync(new[]
+        {
+            new TaggedHotel
+            {
+                HotelId = "alpha",
+                City = "Seattle",
+                Rating = 5,
+                Tags = new[] { "spa", "downtown" },
+                Description = "Coastline Inn",
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f, 0f })
+            },
+            new TaggedHotel
+            {
+                HotelId = "beta",
+                City = "Portland",
+                Rating = 4,
+                Tags = new[] { "business" },
+                Description = "City Center Hotel",
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 0f, 1f, 0f })
+            },
+            new TaggedHotel
+            {
+                HotelId = "gamma",
+                City = "Seattle",
+                Rating = 3,
+                Tags = new[] { "historic" },
+                Description = "Harbor Inn",
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 0f, 0f, 1f })
+            }
+        });
+
+        var results = new List<TaggedHotel>();
+        var allowedCities = new[] { "Seattle", "Portland" };
+        await foreach (var record in collection.GetAsync(
+            h => (h.Tags.Contains("spa") || h.City!.StartsWith("Sea"))
+                && allowedCities.Contains(h.City!)
+                && h.Description!.EndsWith("Inn")
+                && h.Rating >= 4,
+            top: 5))
+        {
+            results.Add(record);
+        }
+
+        var result = Assert.Single(results);
+        Assert.NotNull(result.HotelId);
+        var hotelId = result.HotelId!;
+        Assert.Equal("alpha", hotelId);
+    }
+
+    [Fact]
+    public async Task BatchUpsertRollsBackOnFailureAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+        using var store = new LiteDbVectorStore(database, new LiteDbVectorStoreOptions { DisposeDatabase = false });
+
+        var collection = store.GetCollection<string, TestHotel>("hotels");
+        await collection.EnsureCollectionExistsAsync();
+
+        var rawCollection = database.GetCollection<BsonDocument>("hotels");
+        rawCollection.EnsureIndex(nameof(TestHotel.HotelName), unique: true);
+
+        var records = new[]
+        {
+            new TestHotel
+            {
+                HotelId = "alpha",
+                HotelName = "Duplicate",
+                Rating = 4,
+                City = "Seattle",
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f, 0f })
+            },
+            new TestHotel
+            {
+                HotelId = "beta",
+                HotelName = "Duplicate",
+                Rating = 5,
+                City = "Portland",
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 0f, 1f, 0f })
+            }
+        };
+
+        await Assert.ThrowsAsync<LiteException>(() => collection.UpsertAsync(records));
+
+        Assert.Empty(rawCollection.FindAll());
+    }
+
+    [Fact]
+    public async Task ThrowsWhenVectorDimensionsMismatchAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+        using var store = new LiteDbVectorStore(database, new LiteDbVectorStoreOptions { DisposeDatabase = false });
+
+        var collection = store.GetCollection<string, TestHotel>("hotels");
+        await collection.EnsureCollectionExistsAsync();
+
+        var invalid = new TestHotel
+        {
+            HotelId = "alpha",
+            HotelName = "Alpha",
+            City = "Seattle",
+            Rating = 4,
+            DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f })
+        };
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => collection.UpsertAsync(invalid));
+        Assert.Contains("expects 3 dimensions", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PropertyAndCollectionMetricsTakePrecedenceOverStoreDefaultsAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+
+        var storeOptions = new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            DistanceMetric = LiteDbDistanceMetric.Cosine
+        };
+
+        var collectionOptions = new LiteDbCollectionOptions
+        {
+            DistanceMetric = LiteDbDistanceMetric.Euclidean
+        };
+
+        using var collection = new LiteDbCollection<string, MultiVectorHotel>(
+            database,
+            "multi_hotels",
+            storeOptions,
+            collectionOptions,
+            opts => new LiteDbModelBuilder().Build(typeof(MultiVectorHotel), opts.Definition, opts.EmbeddingGenerator),
+            connectionIdentifier: "test");
+
+        await collection.EnsureCollectionExistsAsync();
+
+        await collection.UpsertAsync(new[]
+        {
+            new MultiVectorHotel
+            {
+                HotelId = "alpha",
+                AmenitiesEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f }),
+                LocationEmbedding = new ReadOnlyMemory<float>(new[] { 0f, 10f })
+            },
+            new MultiVectorHotel
+            {
+                HotelId = "beta",
+                AmenitiesEmbedding = new ReadOnlyMemory<float>(new[] { 0f, 1f }),
+                LocationEmbedding = new ReadOnlyMemory<float>(new[] { 0f, 2f })
+            }
+        });
+
+        var amenityResults = new List<VectorSearchResult<MultiVectorHotel>>();
+        var amenityOptions = new VectorSearchOptions<MultiVectorHotel>
+        {
+            VectorProperty = h => h.AmenitiesEmbedding
+        };
+
+        await foreach (var result in collection.SearchAsync(new ReadOnlyMemory<float>(new[] { 0f, 1f }), top: 1, amenityOptions))
+        {
+            amenityResults.Add(result);
+        }
+
+        Assert.Single(amenityResults);
+        Assert.Equal("beta", amenityResults[0].Record.HotelId);
+
+        var locationResults = new List<VectorSearchResult<MultiVectorHotel>>();
+        var locationOptions = new VectorSearchOptions<MultiVectorHotel>
+        {
+            VectorProperty = h => h.LocationEmbedding
+        };
+
+        await foreach (var result in collection.SearchAsync(new ReadOnlyMemory<float>(new[] { 0f, 0f }), top: 1, locationOptions))
+        {
+            locationResults.Add(result);
+        }
+
+        Assert.Single(locationResults);
+        Assert.Equal("beta", locationResults[0].Record.HotelId);
+    }
+
+    [Fact]
+    public async Task PropertySpecificEmbeddingGeneratorOverridesDefaultsAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+
+        var defaultGenerator = new TrackingStringEmbeddingGenerator(value => new[] { 9f, 9f, 9f });
+        var overrideGenerator = new TrackingStringEmbeddingGenerator(ParseVector);
+
+        var storeOptions = new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            EmbeddingGenerator = defaultGenerator
+        };
+
+        using var store = new LiteDbVectorStore(database, storeOptions);
+
+        var definition = new VectorStoreCollectionDefinition
+        {
+            Properties =
+            {
+                new VectorStoreKeyProperty(nameof(OverrideHotel.HotelId), typeof(string)),
+                new VectorStoreVectorProperty<string>(nameof(OverrideHotel.Overview), 3)
+                {
+                    EmbeddingGenerator = overrideGenerator
+                },
+                new VectorStoreVectorProperty<string>(nameof(OverrideHotel.Amenities), 3)
+            }
+        };
+
+        var collection = store.GetCollection<string, OverrideHotel>("override_hotels", definition);
+        await collection.EnsureCollectionExistsAsync();
+
+        var record = new OverrideHotel
+        {
+            HotelId = "alpha",
+            Overview = "1,0,0",
+            Amenities = "0,1,0"
+        };
+
+        await collection.UpsertAsync(record);
+
+        var raw = database.GetCollection("override_hotels").FindById("alpha");
+        Assert.NotNull(raw);
+        Assert.Equal(new[] { 1f, 0f, 0f }, ((BsonVector)raw![nameof(OverrideHotel.Overview)]).Values);
+        Assert.Equal(new[] { 9f, 9f, 9f }, ((BsonVector)raw![nameof(OverrideHotel.Amenities)]).Values);
+
+        Assert.Equal(1, overrideGenerator.BatchCalls);
+        Assert.Single(overrideGenerator.BatchInputs);
+        Assert.Equal("1,0,0", overrideGenerator.BatchInputs[0]);
+        Assert.Equal(1, defaultGenerator.BatchCalls);
+        Assert.Single(defaultGenerator.BatchInputs);
+        Assert.Equal("0,1,0", defaultGenerator.BatchInputs[0]);
+
+        var options = new VectorSearchOptions<OverrideHotel>
+        {
+            VectorProperty = h => h.Overview
+        };
+
+        var searchResults = new List<VectorSearchResult<OverrideHotel>>();
+        await foreach (var result in collection.SearchAsync("1,0,0", top: 1, options))
+        {
+            searchResults.Add(result);
+        }
+
+        Assert.Single(searchResults);
+        Assert.Equal("alpha", searchResults[0].Record.HotelId);
+    }
+
+    [Fact]
+    public async Task CancellationStopsEmbeddingGenerationOnUpsertAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+        var generator = new CancellableEmbeddingGenerator();
+
+        using var store = new LiteDbVectorStore(database, new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            EmbeddingGenerator = generator
+        });
+
+        var collection = store.GetCollection<string, GeneratedHotel>("generated_hotels");
+        await collection.EnsureCollectionExistsAsync();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => collection.UpsertAsync(new GeneratedHotel
+        {
+            HotelId = "alpha",
+            Description = "1,0,0"
+        }, cts.Token));
+
+        Assert.Null(database.GetCollection("generated_hotels").FindById("alpha"));
+    }
+
+    [Fact]
+    public async Task CancellationStopsEmbeddingGenerationOnSearchAsync()
+    {
+        using var database = new LiteDatabase(new MemoryStream());
+        var generator = new CancellableEmbeddingGenerator();
+
+        using var store = new LiteDbVectorStore(database, new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            EmbeddingGenerator = generator
+        });
+
+        var collection = store.GetCollection<string, GeneratedHotel>("generated_hotels");
+        await collection.EnsureCollectionExistsAsync();
+
+        await collection.UpsertAsync(new GeneratedHotel
+        {
+            HotelId = "alpha",
+            Description = "1,0,0"
+        });
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in collection.SearchAsync("1,0,0", top: 1, cancellationToken: cts.Token))
+            {
+            }
+        });
+    }
+
+    [Fact]
+    public void AutoCreateVectorIndexesAliasKeepsOptionsInSync()
+    {
+        var options = new LiteDbVectorStoreOptions
+        {
+            AutoCreateVectorIndexes = false
+        };
+
+        Assert.False(options.AutoEnsureVectorIndex);
+
+        options.AutoEnsureVectorIndex = true;
+        Assert.True(options.AutoCreateVectorIndexes);
+
+        options.AutoCreateVectorIndexes = false;
+        Assert.False(options.AutoEnsureVectorIndex);
+    }
+
+    [Fact]
+    public async Task DatabaseFactoryHasHighestPrecedenceAsync()
+    {
+        var providedStream = new MemoryStream();
+        using var providedDatabase = new LiteDatabase(providedStream);
+
+        LiteDatabase? factoryDatabase = null;
+        var options = new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            Database = providedDatabase,
+            DatabaseFactory = () =>
+            {
+                factoryDatabase = new LiteDatabase(new MemoryStream());
+                return factoryDatabase;
+            }
+        };
+
+        using (var store = new LiteDbVectorStore(options))
+        {
+            var collection = store.GetCollection<string, TestHotel>("hotels");
+            await collection.EnsureCollectionExistsAsync();
+            await collection.UpsertAsync(new TestHotel
+            {
+                HotelId = "alpha",
+                HotelName = "Alpha",
+                City = "Seattle",
+                Rating = 4,
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f, 0f })
+            });
+        }
+
+        Assert.NotNull(factoryDatabase);
+        Assert.NotNull(factoryDatabase!.GetCollection("hotels").FindById("alpha"));
+        Assert.Null(providedDatabase.GetCollection("hotels").FindById("alpha"));
+    }
+
+    [Fact]
+    public async Task DatabaseInstanceOverridesConnectionStringAsync()
+    {
+        using var providedDatabase = new LiteDatabase(new MemoryStream());
+        var options = new LiteDbVectorStoreOptions
+        {
+            DisposeDatabase = false,
+            Database = providedDatabase,
+            ConnectionString = "Filename=ignored.db"
+        };
+
+        using (var store = new LiteDbVectorStore("Filename=also-ignored.db", options))
+        {
+            var collection = store.GetCollection<string, TestHotel>("hotels");
+            await collection.EnsureCollectionExistsAsync();
+            await collection.UpsertAsync(new TestHotel
+            {
+                HotelId = "alpha",
+                HotelName = "Alpha",
+                City = "Seattle",
+                Rating = 4,
+                DescriptionEmbedding = new ReadOnlyMemory<float>(new[] { 1f, 0f, 0f })
+            });
+        }
+
+        Assert.NotNull(providedDatabase.GetCollection("hotels").FindById("alpha"));
+    }
+
+    private static float[] ParseVector(string value)
+        => value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(float.Parse)
+            .ToArray();
+
+    private sealed class TaggedHotel
+    {
+        [VectorStoreKey]
+        public string? HotelId { get; set; }
+
+        [VectorStoreData]
+        public string[] Tags { get; set; } = Array.Empty<string>();
+
+        [VectorStoreData]
+        public string? City { get; set; }
+
+        [VectorStoreData]
+        public int Rating { get; set; }
+
+        [VectorStoreData]
+        public string? Description { get; set; }
+
+        [VectorStoreVector(Dimensions: 3)]
+        public ReadOnlyMemory<float>? DescriptionEmbedding { get; set; }
+    }
+
+    private sealed class MultiVectorHotel
+    {
+        [VectorStoreKey]
+        public string? HotelId { get; set; }
+
+        [VectorStoreVector(Dimensions: 2, DistanceFunction = DistanceFunction.DotProductSimilarity)]
+        public ReadOnlyMemory<float>? AmenitiesEmbedding { get; set; }
+
+        [VectorStoreVector(Dimensions: 2)]
+        public ReadOnlyMemory<float>? LocationEmbedding { get; set; }
+    }
+
+    private sealed class OverrideHotel
+    {
+        [VectorStoreKey]
+        public string? HotelId { get; set; }
+
+        public string? Overview { get; set; }
+
+        public string? Amenities { get; set; }
+    }
+
+    private sealed class TrackingStringEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        private readonly Func<string, float[]> _projection;
+
+        internal TrackingStringEmbeddingGenerator(Func<string, float[]> projection)
+        {
+            this._projection = projection;
+        }
+
+        public int BatchCalls { get; private set; }
+
+        public int SingleCalls { get; private set; }
+
+        public List<string> BatchInputs { get; } = new();
+
+        public List<string> SingleInputs { get; } = new();
+
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            this.BatchCalls++;
+
+            var embeddings = new GeneratedEmbeddings<Embedding<float>>();
+            foreach (var value in values)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                this.BatchInputs.Add(value);
+                embeddings.Add(new Embedding<float>(this._projection(value)));
+            }
+
+            return Task.FromResult(embeddings);
+        }
+
+        public Task<Embedding<float>> GenerateAsync(string value, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            this.SingleCalls++;
+            this.SingleInputs.Add(value);
+            return Task.FromResult(new Embedding<float>(this._projection(value)));
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null)
+            => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class CancellableEmbeddingGenerator : IEmbeddingGenerator<string, Embedding<float>>
+    {
+        public Task<GeneratedEmbeddings<Embedding<float>>> GenerateAsync(IEnumerable<string> values, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var embeddings = new GeneratedEmbeddings<Embedding<float>>();
+            foreach (var value in values)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                embeddings.Add(new Embedding<float>(ParseVector(value)));
+            }
+
+            return Task.FromResult(embeddings);
+        }
+
+        public Task<Embedding<float>> GenerateAsync(string value, EmbeddingGenerationOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new Embedding<float>(ParseVector(value)));
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null)
+            => null;
+
+        public void Dispose()
+        {
+        }
     }
 
     private sealed class TestHotel

@@ -12,6 +12,8 @@ namespace Microsoft.SemanticKernel.Connectors.LiteDb;
 public sealed class LiteDbVectorStoreOptions
 {
     internal static readonly LiteDbVectorStoreOptions Default = new();
+    private bool _autoEnsureVectorIndex = true;
+    private bool? _autoCreateVectorIndexes;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LiteDbVectorStoreOptions"/> class.
@@ -33,6 +35,7 @@ public sealed class LiteDbVectorStoreOptions
         this.DisposeDatabase = source.DisposeDatabase;
         this.DistanceMetric = source.DistanceMetric;
         this.AutoEnsureVectorIndex = source.AutoEnsureVectorIndex;
+        this.AutoCreateVectorIndexes = source.AutoCreateVectorIndexes;
         this.EmbeddingGenerator = source.EmbeddingGenerator;
         this.CollectionNamePrefix = source.CollectionNamePrefix;
     }
@@ -74,7 +77,31 @@ public sealed class LiteDbVectorStoreOptions
     /// <summary>
     /// Gets or sets a value indicating whether collections created through this store automatically ensure their vector index.
     /// </summary>
-    public bool AutoEnsureVectorIndex { get; set; } = true;
+    public bool AutoEnsureVectorIndex
+    {
+        get => this._autoEnsureVectorIndex;
+        set
+        {
+            this._autoEnsureVectorIndex = value;
+            this._autoCreateVectorIndexes = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether collections created through this store automatically ensure their vector index.
+    /// </summary>
+    public bool? AutoCreateVectorIndexes
+    {
+        get => this._autoCreateVectorIndexes;
+        set
+        {
+            this._autoCreateVectorIndexes = value;
+            if (value.HasValue)
+            {
+                this._autoEnsureVectorIndex = value.Value;
+            }
+        }
+    }
 
     /// <summary>
     /// Gets or sets the default embedding generator to use when generating embeddings for vector properties.
